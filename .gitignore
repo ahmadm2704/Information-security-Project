@@ -1,0 +1,52 @@
+# Node modules
+node_modules/
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# dotenv environment variables file
+.env
+.env.local
+.env.development
+.env.production
+.env.test
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Coverage directory used by tools like istanbul
+coverage/
+
+# Production build
+dist/
+build/
+
+# Cache
+.cache/
+.tmp/
+temp/
+
+# Uploaded files (OPTIONAL — remove if you want uploads to be tracked)
+uploads/
+
+# Client-side dependencies
+client/node_modules/
+client/.next/
+client/dist/
+client/build/
+
+# IDE / Editor
+.vscode/
+.idea/
+
+# OS generated
+.DS_Store
+Thumbs.db
