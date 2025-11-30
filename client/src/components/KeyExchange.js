@@ -6,18 +6,23 @@ import { useAuth, API_URL } from '../App';
 function KeyExchange() {
   const { partnerId } = useParams();
   const navigate = useNavigate();
-  const { user, token, privateKeys } = useAuth();
+  const { user, token, privateKeys, setPrivateKeys } = useAuth();
   
   const [socket, setSocket] = useState(null);
   const [partner, setPartner] = useState(null);
-  const [partnerIdentityKey, setPartnerIdentityKey] = useState(null);
   const [status, setStatus] = useState('loading');
   const [logs, setLogs] = useState([]);
   const [error, setError] = useState('');
   const [sessionKey, setSessionKey] = useState(null);
   const [fingerprint, setFingerprint] = useState('');
+  const [keysReady, setKeysReady] = useState(false);
+  const [needsPassword, setNeedsPassword] = useState(false);
+  const [password, setPassword] = useState('');
+  
   const ephemeralPrivateKeyRef = useRef(null);
   const loadedKeysRef = useRef(null);
+  const socketRef = useRef(null);
+  const sessionKeyRef = useRef(null);
   
   const addLog = useCallback((message, type = 'info') => {
     setLogs(prev => [...prev, {
@@ -26,94 +31,55 @@ function KeyExchange() {
       time: new Date().toLocaleTimeString()
     }]);
   }, []);
-  
-  // Initiate key exchange - simplified, no password prompt
-  const initiateKeyExchange = async () => {
-    const keysToUse = privateKeys || loadedKeysRef.current;
+
+  // Get available keys (from context or loaded ref)
+  const getAvailableKeys = useCallback(() => {
+    return privateKeys || loadedKeysRef.current;
+  }, [privateKeys]);
+
+  // Load private keys on mount
+  useEffect(() => {
+    const loadKeys = async () => {
+      // If we already have keys in context, use them
+      if (privateKeys) {
+        console.log('[KE] Keys available from context');
+        loadedKeysRef.current = privateKeys;
+        setKeysReady(true);
+        addLog("Private keys loaded from session", "success");
+        return;
+      }
+      
+      // Try to retrieve keys from storage (need password)
+      console.log('[KE] No keys in context, will need password');
+      setNeedsPassword(true);
+    };
     
-    if (!keysToUse) {
-      setError('❌ Private keys not available. Please log in again.');
-      return;
+    if (user?.id) {
+      loadKeys();
     }
-    
-    if (!socket) {
-      setError('Socket not connected');
-      return;
-    }
-    
-    // Proceed with key exchange
-    await proceedWithKeyExchange(keysToUse);
-  };
-  
-  // Separate function to actually proceed with the exchange
-  const proceedWithKeyExchange = async (keysToUse) => {
-    if (!keysToUse) {
-      setError('No keys available');
-      return;
-    }
-    
-    if (!socket) {
-      setError('Socket not connected');
+  }, [user, privateKeys, addLog]);
+
+  // Handle password submission to unlock keys
+  const handleUnlockKeys = async () => {
+    if (!password) {
+      setError('Please enter your password');
       return;
     }
     
     try {
-      setStatus('initiating');
-      setLogs([]);
-      addLog('Generating ephemeral ECDH key pair...', 'info');
-      
-      // Generate ephemeral key pair
-      const ephKp = await crypto.subtle.generateKey(
-        { name: 'ECDH', namedCurve: 'P-256' },
-        true, ['deriveKey', 'deriveBits']
-      );
-      
-      ephemeralPrivateKeyRef.current = ephKp.privateKey;
-      
-      // Export public keys
-      console.log('Exporting ephemeral public key...');
-      const ephPubJwk = window.CryptoLib.cleanJwkPublic(
-        await crypto.subtle.exportKey('jwk', ephKp.publicKey)
-      );
-      
-      console.log('Exporting signing public key...');
-      const sigPubJwk = window.CryptoLib.cleanJwkPublic(
-        await crypto.subtle.exportKey('jwk', keysToUse.signing)
-      );
-      
-      addLog('Signing bundle with identity key...', 'info');
-      
-      // Create and sign bundle
-      const timestamp = Date.now();
-      const bundle = {
-        ephemeralKey: JSON.stringify(ephPubJwk),
-        identityKey: JSON.stringify(sigPubJwk),
-        timestamp
-      };
-      
-      const message = JSON.stringify(bundle);
-      const signature = await crypto.subtle.sign(
-        { name: 'ECDSA', hash: 'SHA-256' },
-        keysToUse.signing,
-        new TextEncoder().encode(message)
-      );
-      
-      bundle.signature = window.CryptoLib.toBase64(signature);
-      
-      addLog('Sending to partner...', 'info');
-      
-      socket.emit('keyexchange:initiate', {
-        recipientId: partnerId,
-        bundle
-      });
-      
-      addLog('Waiting for response...', 'info');
-      
-    } catch (e) {
-      console.error('Proceed error:', e);
-      setError(e.message);
-      setStatus('error');
-      addLog(e.message, 'error');
+      console.log('[KE] Attempting to retrieve keys with password...');
+      const keys = await window.CryptoLib.retrievePrivateKeys(user.id, password);
+      loadedKeysRef.current = keys;
+      if (setPrivateKeys) {
+        setPrivateKeys(keys); // Update context too
+      }
+      setKeysReady(true);
+      setNeedsPassword(false);
+      setError('');
+      addLog("Private keys unlocked successfully", "success");
+    } catch (err) {
+      console.error('[KE] Failed to unlock keys:', err);
+      setError('Failed to unlock keys. Check your password or log in again.');
     }
   };
   
@@ -123,20 +89,25 @@ function KeyExchange() {
     
     const s = io(API_URL, { auth: { token } });
     
-    s.on('connect', () => console.log('Socket connected'));
+    s.on('connect', () => {
+      console.log('Socket connected');
+      addLog('Connected to server', 'info');
+    });
+    
     s.on('connect_error', (e) => {
       console.error('Socket error:', e);
       setError('Connection error');
     });
     
     setSocket(s);
+    socketRef.current = s;
+    
     return () => s.disconnect();
-  }, [token]);
+  }, [token, addLog]);
   
-  // Load partner's keys
+  // Load partner info
   useEffect(() => {
     if (!partnerId || !token) {
-      console.log('Waiting for prerequisites:', { partnerId, token: !!token });
       return;
     }
     
@@ -147,8 +118,6 @@ function KeyExchange() {
           headers: { Authorization: `Bearer ${token}` }
         });
         
-        console.log('Partner bundle response:', res.status, res.statusText);
-        
         if (!res.ok) {
           const errData = await res.json();
           throw new Error(errData.error || 'Failed to load partner');
@@ -157,29 +126,8 @@ function KeyExchange() {
         const data = await res.json();
         console.log('Partner data loaded:', data.username);
         setPartner(data);
-        
-        // Import partner's identity key for verification
-        try {
-          console.log('Importing identity key...');
-          const publicKeyString = data.publicKeys.identityKey.publicKey;
-          console.log('Public key string type:', typeof publicKeyString);
-          const idJwk = JSON.parse(publicKeyString);
-          console.log('JWK parsed:', { kty: idJwk.kty, crv: idJwk.crv, x: idJwk.x ? 'present' : 'missing', y: idJwk.y ? 'present' : 'missing' });
-          const idKey = await crypto.subtle.importKey(
-            'jwk', idJwk,
-            { name: 'ECDSA', namedCurve: 'P-256' },
-            true, ['verify']
-          );
-          console.log('Key imported successfully');
-          setPartnerIdentityKey(idKey);
-          
-          setStatus('ready');
-          addLog(`Loaded ${data.username}'s public keys`, 'success');
-        } catch (keyError) {
-          console.error('Key import error:', keyError);
-          console.error('Error stack:', keyError.stack);
-          throw keyError;
-        }
+        setStatus('ready');
+        addLog(`Loaded ${data.username}'s info`, 'success');
         
       } catch (e) {
         console.error('Partner load error:', e);
@@ -191,55 +139,19 @@ function KeyExchange() {
     
     loadPartner();
   }, [partnerId, token, addLog]);
+
+  // Helper function to get public key from private signing key
+  const getSigningPublicKey = async (privateKey) => {
+    const jwk = await crypto.subtle.exportKey('jwk', privateKey);
+    return window.CryptoLib.cleanJwkPublic(jwk);
+  };
   
-  // Socket event handlers
-  useEffect(() => {
-    if (!socket || !partnerIdentityKey || !privateKeys) return;
+  // Respond to key exchange - USE THE IDENTITY KEY FROM THE BUNDLE for verification
+  const respondToKeyExchange = useCallback(async (data) => {
+    const keys = getAvailableKeys();
     
-    // Handle incoming key exchange request (we're the responder)
-    socket.on('keyexchange:request', async (data) => {
-      if (data.initiatorId === partnerId) {
-        addLog('Received key exchange request', 'info');
-        setStatus('responding');
-        await respondToKeyExchange(data);
-      }
-    });
-    
-    // Handle response (we're the initiator)
-    socket.on('keyexchange:response', async (data) => {
-      if (data.responderId === partnerId) {
-        addLog('Received key exchange response', 'info');
-        await completeKeyExchange(data);
-      }
-    });
-    
-    // Handle confirmation
-    socket.on('keyexchange:confirmed', (data) => {
-      if (data.partnerId === partnerId) {
-        addLog('Key exchange confirmed!', 'success');
-        finalizeKeyExchange();
-      }
-    });
-    
-    socket.on('keyexchange:offline', () => {
-      setError('Partner is offline');
-      setStatus('error');
-      addLog('Partner is offline', 'error');
-    });
-    
-    return () => {
-      socket.off('keyexchange:request');
-      socket.off('keyexchange:response');
-      socket.off('keyexchange:confirmed');
-      socket.off('keyexchange:offline');
-    };
-  }, [socket, partnerId, partnerIdentityKey, privateKeys]);
-  
-  // Respond to key exchange
-  const respondToKeyExchange = async (data) => {
     try {
-      // Get the signing key - if not in state, check if it's loaded
-      const signingKey = privateKeys?.signing || loadedKeysRef.current?.signing;
+      const signingKey = keys?.signing;
       if (!signingKey) {
         throw new Error('Private signing key not available');
       }
@@ -248,16 +160,24 @@ function KeyExchange() {
       
       const bundle = data.bundle;
       
-      // Parse keys
-      const theirEphJwk = JSON.parse(bundle.ephemeralKey);
+      // Parse the identity key FROM THE BUNDLE (not from stored keys)
+      // This is the key the initiator actually used to sign
       const theirIdJwk = JSON.parse(bundle.identityKey);
+      const theirEphJwk = JSON.parse(bundle.ephemeralKey);
+      
+      // Import the identity key from the bundle for verification
+      const theirIdentityKey = await crypto.subtle.importKey(
+        'jwk', theirIdJwk,
+        { name: 'ECDSA', namedCurve: 'P-256' },
+        true, ['verify']
+      );
       
       // Verify timestamp
       if (Math.abs(Date.now() - bundle.timestamp) > 5 * 60 * 1000) {
         throw new Error('Timestamp expired - possible replay attack');
       }
       
-      // Verify signature
+      // Verify signature using the identity key FROM THE BUNDLE
       const msgToVerify = JSON.stringify({
         ephemeralKey: bundle.ephemeralKey,
         identityKey: bundle.identityKey,
@@ -266,7 +186,7 @@ function KeyExchange() {
       
       const valid = await crypto.subtle.verify(
         { name: 'ECDSA', hash: 'SHA-256' },
-        partnerIdentityKey,
+        theirIdentityKey,  // Use the key from the bundle
         window.CryptoLib.fromBase64(bundle.signature),
         new TextEncoder().encode(msgToVerify)
       );
@@ -316,6 +236,7 @@ function KeyExchange() {
       );
       
       setSessionKey(sessKey);
+      sessionKeyRef.current = sessKey;
       
       // Calculate fingerprint
       const keyBytes = await crypto.subtle.exportKey('raw', sessKey);
@@ -332,14 +253,14 @@ function KeyExchange() {
       const myEphPubJwk = window.CryptoLib.cleanJwkPublic(
         await crypto.subtle.exportKey('jwk', myEphKp.publicKey)
       );
-      const mySigPubJwk = window.CryptoLib.cleanJwkPublic(
-        await crypto.subtle.exportKey('jwk', signingKey)
-      );
+      
+      // Get our signing public key
+      const sigPubJwk = await getSigningPublicKey(signingKey);
       
       const respTimestamp = Date.now();
       const respBundle = {
         ephemeralKey: JSON.stringify(myEphPubJwk),
-        identityKey: JSON.stringify(mySigPubJwk),
+        identityKey: JSON.stringify(sigPubJwk),
         salt: window.CryptoLib.toBase64(salt),
         timestamp: respTimestamp
       };
@@ -355,7 +276,7 @@ function KeyExchange() {
       
       addLog('Sending response...', 'info');
       
-      socket.emit('keyexchange:respond', {
+      socketRef.current.emit('keyexchange:respond', {
         initiatorId: data.initiatorId,
         responderId: user.id,
         bundle: respBundle
@@ -370,25 +291,33 @@ function KeyExchange() {
       setStatus('error');
       addLog(e.message, 'error');
     }
-  };
+  }, [getAvailableKeys, user, addLog]);
   
-  // Complete key exchange (initiator side)
-  const completeKeyExchange = async (data) => {
+  // Complete key exchange (initiator side) - USE IDENTITY KEY FROM BUNDLE
+  const completeKeyExchange = useCallback(async (data) => {
     try {
       setStatus('deriving');
       addLog('Verifying responder signature...', 'info');
       
       const bundle = data.bundle;
       
-      // Parse keys
+      // Parse the identity key FROM THE BUNDLE
+      const theirIdJwk = JSON.parse(bundle.identityKey);
       const theirEphJwk = window.CryptoLib.cleanJwk(JSON.parse(bundle.ephemeralKey));
+      
+      // Import the identity key from the bundle for verification
+      const theirIdentityKey = await crypto.subtle.importKey(
+        'jwk', theirIdJwk,
+        { name: 'ECDSA', namedCurve: 'P-256' },
+        true, ['verify']
+      );
       
       // Verify timestamp
       if (Math.abs(Date.now() - bundle.timestamp) > 5 * 60 * 1000) {
         throw new Error('Timestamp expired');
       }
       
-      // Verify signature
+      // Verify signature using the identity key FROM THE BUNDLE
       const msgToVerify = JSON.stringify({
         ephemeralKey: bundle.ephemeralKey,
         identityKey: bundle.identityKey,
@@ -398,7 +327,7 @@ function KeyExchange() {
       
       const valid = await crypto.subtle.verify(
         { name: 'ECDSA', hash: 'SHA-256' },
-        partnerIdentityKey,
+        theirIdentityKey,  // Use the key from the bundle
         window.CryptoLib.fromBase64(bundle.signature),
         new TextEncoder().encode(msgToVerify)
       );
@@ -443,6 +372,7 @@ function KeyExchange() {
       );
       
       setSessionKey(sessKey);
+      sessionKeyRef.current = sessKey;
       
       // Calculate fingerprint
       const keyBytes = await crypto.subtle.exportKey('raw', sessKey);
@@ -459,7 +389,7 @@ function KeyExchange() {
       
       addLog('Sending confirmation...', 'info');
       
-      socket.emit('keyexchange:confirm', {
+      socketRef.current.emit('keyexchange:confirm', {
         partnerId,
         confirmation: 'ok'
       });
@@ -485,14 +415,18 @@ function KeyExchange() {
       setStatus('error');
       addLog(e.message, 'error');
     }
-  };
+  }, [partnerId, token, navigate, addLog]);
   
   // Finalize (responder side after confirmation)
-  const finalizeKeyExchange = async () => {
-    if (!sessionKey) return;
+  const finalizeKeyExchange = useCallback(async () => {
+    const keyToStore = sessionKeyRef.current || sessionKey;
+    if (!keyToStore) {
+      console.error('No session key available for finalization');
+      return;
+    }
     
     try {
-      await window.CryptoLib.storeSessionKey(partnerId, sessionKey);
+      await window.CryptoLib.storeSessionKey(partnerId, keyToStore);
       
       setStatus('complete');
       addLog('🔐 Key exchange complete!', 'success');
@@ -511,6 +445,137 @@ function KeyExchange() {
     } catch (e) {
       console.error('Finalize error:', e);
     }
+  }, [sessionKey, partnerId, token, navigate, addLog]);
+
+  // Socket event handlers
+  useEffect(() => {
+    if (!socket || !keysReady) {
+      console.log('[KE] Waiting for socket handlers setup:', { 
+        socket: !!socket, 
+        keysReady 
+      });
+      return;
+    }
+    
+    console.log('[KE] Setting up socket handlers');
+    
+    // Handle incoming key exchange request (we're the responder)
+    const handleRequest = async (data) => {
+      console.log('[KE] Received keyexchange:request', data);
+      if (data.initiatorId === partnerId) {
+        addLog('Received key exchange request', 'info');
+        setStatus('responding');
+        await respondToKeyExchange(data);
+      }
+    };
+    
+    // Handle response (we're the initiator)
+    const handleResponse = async (data) => {
+      console.log('[KE] Received keyexchange:response', data);
+      if (data.responderId === partnerId) {
+        addLog('Received key exchange response', 'info');
+        await completeKeyExchange(data);
+      }
+    };
+    
+    // Handle confirmation
+    const handleConfirmed = (data) => {
+      console.log('[KE] Received keyexchange:confirmed', data);
+      if (data.partnerId === partnerId) {
+        addLog('Key exchange confirmed!', 'success');
+        finalizeKeyExchange();
+      }
+    };
+    
+    const handleOffline = () => {
+      setError('Partner is offline');
+      setStatus('error');
+      addLog('Partner is offline', 'error');
+    };
+    
+    socket.on('keyexchange:request', handleRequest);
+    socket.on('keyexchange:response', handleResponse);
+    socket.on('keyexchange:confirmed', handleConfirmed);
+    socket.on('keyexchange:offline', handleOffline);
+    
+    return () => {
+      socket.off('keyexchange:request', handleRequest);
+      socket.off('keyexchange:response', handleResponse);
+      socket.off('keyexchange:confirmed', handleConfirmed);
+      socket.off('keyexchange:offline', handleOffline);
+    };
+  }, [socket, partnerId, keysReady, respondToKeyExchange, completeKeyExchange, finalizeKeyExchange, addLog]);
+  
+  // Initiate key exchange
+  const initiateKeyExchange = async () => {
+    const keysToUse = getAvailableKeys();
+    
+    if (!keysToUse) {
+      setError('❌ Private keys not available. Please enter your password or log in again.');
+      setNeedsPassword(true);
+      return;
+    }
+    
+    if (!socket) {
+      setError('Socket not connected');
+      return;
+    }
+    
+    try {
+      setStatus('initiating');
+      setLogs([]);
+      addLog('Generating ephemeral ECDH key pair...', 'info');
+      
+      // Generate ephemeral key pair
+      const ephKp = await crypto.subtle.generateKey(
+        { name: 'ECDH', namedCurve: 'P-256' },
+        true, ['deriveKey', 'deriveBits']
+      );
+      
+      ephemeralPrivateKeyRef.current = ephKp.privateKey;
+      
+      // Export public keys
+      const ephPubJwk = window.CryptoLib.cleanJwkPublic(
+        await crypto.subtle.exportKey('jwk', ephKp.publicKey)
+      );
+      
+      // Get our signing public key
+      const sigPubJwk = await getSigningPublicKey(keysToUse.signing);
+      
+      addLog('Signing bundle with identity key...', 'info');
+      
+      // Create and sign bundle
+      const timestamp = Date.now();
+      const bundle = {
+        ephemeralKey: JSON.stringify(ephPubJwk),
+        identityKey: JSON.stringify(sigPubJwk),
+        timestamp
+      };
+      
+      const message = JSON.stringify(bundle);
+      const signature = await crypto.subtle.sign(
+        { name: 'ECDSA', hash: 'SHA-256' },
+        keysToUse.signing,
+        new TextEncoder().encode(message)
+      );
+      
+      bundle.signature = window.CryptoLib.toBase64(signature);
+      
+      addLog('Sending to partner...', 'info');
+      
+      socket.emit('keyexchange:initiate', {
+        recipientId: partnerId,
+        bundle
+      });
+      
+      addLog('Waiting for response...', 'info');
+      
+    } catch (e) {
+      console.error('Initiate error:', e);
+      setError(e.message);
+      setStatus('error');
+      addLog(e.message, 'error');
+    }
   };
   
   return (
@@ -524,7 +589,7 @@ function KeyExchange() {
         {/* Status */}
         <div className={`ke-status status-${status}`}>
           {status === 'loading' && '⏳ Loading...'}
-          {status === 'ready' && '✅ Ready to exchange keys'}
+          {status === 'ready' && (keysReady ? '✅ Ready to exchange keys' : '🔑 Enter password to unlock keys')}
           {status === 'initiating' && '🔄 Initiating...'}
           {status === 'responding' && '🔄 Responding...'}
           {status === 'deriving' && '🔄 Deriving keys...'}
@@ -532,6 +597,25 @@ function KeyExchange() {
           {status === 'complete' && '✅ Key exchange complete!'}
           {status === 'error' && '❌ Key exchange failed'}
         </div>
+        
+        {/* Password prompt if needed */}
+        {needsPassword && !keysReady && (
+          <div className="ke-password-prompt">
+            <div className="password-input-group">
+              <label>🔑 Enter your password to unlock private keys:</label>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="Your login password"
+                onKeyPress={(e) => e.key === 'Enter' && handleUnlockKeys()}
+              />
+              <button className="btn btn-primary" onClick={handleUnlockKeys}>
+                Unlock Keys
+              </button>
+            </div>
+          </div>
+        )}
         
         {/* Error */}
         {error && (
@@ -566,7 +650,7 @@ function KeyExchange() {
         
         {/* Actions */}
         <div className="ke-actions">
-          {status === 'ready' && (
+          {status === 'ready' && keysReady && (
             <button 
               className="btn btn-primary" 
               onClick={initiateKeyExchange}
