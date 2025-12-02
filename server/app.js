@@ -14,6 +14,7 @@ const path = require('path');
 const User = require('./models/User');
 const Message = require('./models/Message');
 const SecurityLog = require('./models/SecurityLog');
+const EncryptedFile = require('./models/EncryptedFile');
 
 // Routes
 const authRoutes = require('./routes/auth');
@@ -201,34 +202,13 @@ io.on('connection', (socket) => {
       console.log(`\n[FILE] 📎 Received file from ${socket.username} (${socket.userId})`);
       console.log(`    Target recipient: ${recipientId}`);
       console.log(`    Filename: ${fileName}, Size: ${fileSize} bytes`);
-      console.log(`    All connected users in map: ${JSON.stringify(Array.from(connectedUsers.entries()))}`);
-      
-      // Store file metadata
-      const encryptedFile = new EncryptedFile({
-        senderId: socket.userId,
-        recipientId,
-        fileName,
-        fileSize,
-        mimeType,
-        encryptedMetadata,
-        encryptedData,
-        encryption,
-        hash,
-        timestamp,
-        sequenceNumber
-      });
-      await encryptedFile.save();
-      console.log(`    Stored in DB with ID: ${encryptedFile._id}`);
       
       // Send to recipient if online
       const recipientSocketId = connectedUsers.get(recipientId);
-      console.log(`    Looking up ${recipientId} in connectedUsers...`);
-      console.log(`    Found socket ID: ${recipientSocketId}`);
       if (recipientSocketId) {
-        console.log(`    ✅ Recipient is online (socket: ${recipientSocketId}), sending file...`);
+        console.log(`    ✅ Recipient is online, sending file...`);
         
         io.to(recipientSocketId).emit('file:receive', {
-          fileId: encryptedFile._id,
           senderId: socket.userId,
           senderUsername: socket.username,
           fileName,
@@ -241,18 +221,14 @@ io.on('connection', (socket) => {
           timestamp,
           sequenceNumber
         });
+        
+        console.log(`    ✅ File relayed successfully!`);
       } else {
         console.log(`    ⚠️  Recipient is offline`);
       }
       
-      // Update status
-      encryptedFile.status = 'delivered';
-      encryptedFile.deliveredAt = new Date();
-      await encryptedFile.save();
-      
-      // Acknowledge
+      // Acknowledge to sender
       socket.emit('file:sent', {
-        fileId: encryptedFile._id,
         status: recipientSocketId ? 'delivered' : 'sent'
       });
       
