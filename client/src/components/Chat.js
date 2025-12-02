@@ -39,7 +39,13 @@ function Chat() {
     
     const newSocket = io(API_URL, {
       auth: { token },
-      transports: ['websocket', 'polling']
+      transports: ['websocket', 'polling'],
+      reconnectionDelay: 1000,
+      reconnection: true,
+      reconnectionAttempts: 10,
+      agent: false,
+      upgrade: false,
+      rejectUnauthorized: false
     });
     
     newSocket.on('connect', () => {
@@ -96,8 +102,13 @@ function Chat() {
     };
     
     const handleFile = async (data) => {
+      console.log('📎 File:receive event triggered');
+      console.log('    Data:', data);
+      console.log('    Current partnerId:', partnerId);
+      console.log('    Data.senderId:', data.senderId);
+      
       if (data.senderId === partnerId) {
-        console.log('📎 Received file:', data.fileName);
+        console.log('✅ File is from the correct partner, adding to messages');
         
         // Store encrypted file data as-is
         const fileMessage = {
@@ -108,6 +119,8 @@ function Chat() {
         };
         
         setMessages(prev => [...prev, fileMessage]);
+      } else {
+        console.log('❌ File is from wrong sender (expected:', partnerId, 'got:', data.senderId, ')');
       }
     };
     

@@ -37,7 +37,8 @@ const io = new Server(server, {
     origin: CLIENT_URL,
     methods: ['GET', 'POST'],
     credentials: true
-  }
+  },
+  maxHttpBufferSize: 50 * 1024 * 1024  // 50MB for file transfers
 });
 
 // Security middleware
@@ -197,8 +198,10 @@ io.on('connection', (socket) => {
     try {
       const { recipientId, fileName, fileSize, mimeType, encryptedMetadata, encryptedData, encryption, hash, timestamp, sequenceNumber } = data;
       
-      console.log(`\n[FILE] 📎 Received file from ${socket.username} (${socket.userId}) -> ${recipientId}`);
+      console.log(`\n[FILE] 📎 Received file from ${socket.username} (${socket.userId})`);
+      console.log(`    Target recipient: ${recipientId}`);
       console.log(`    Filename: ${fileName}, Size: ${fileSize} bytes`);
+      console.log(`    All connected users in map: ${JSON.stringify(Array.from(connectedUsers.entries()))}`);
       
       // Store file metadata
       const encryptedFile = new EncryptedFile({
@@ -219,8 +222,10 @@ io.on('connection', (socket) => {
       
       // Send to recipient if online
       const recipientSocketId = connectedUsers.get(recipientId);
+      console.log(`    Looking up ${recipientId} in connectedUsers...`);
+      console.log(`    Found socket ID: ${recipientSocketId}`);
       if (recipientSocketId) {
-        console.log(`    Recipient is online (socket: ${recipientSocketId}), sending file...`);
+        console.log(`    ✅ Recipient is online (socket: ${recipientSocketId}), sending file...`);
         
         io.to(recipientSocketId).emit('file:receive', {
           fileId: encryptedFile._id,
@@ -236,18 +241,35 @@ io.on('connection', (socket) => {
           timestamp,
           sequenceNumber
         });
-        
-        console.log(`    File:receive emitted to recipient`);
-        
-        // Update status
-        encryptedFile.status = 'delivered';
-        encryptedFile.deliveredAt = new Date();
-        await encryptedFile.save();
       } else {
-        console.log(`    Recipient is OFFLINE, stored for later delivery`);
+        console.log(`    ⚠️  Recipient is offline`);
       }
-    } catch (err) {
-      console.error('[FILE] ❌ Error:', err);
+      
+      // Update status
+      encryptedFile.status = 'delivered';
+      encryptedFile.deliveredAt = new Date();
+      await encryptedFile.save();
+      
+      // Acknowledge
+      socket.emit('file:sent', {
+        fileId: encryptedFile._id,
+        status: recipientSocketId ? 'delivered' : 'sent'
+      });
+      
+      // Log
+      await SecurityLog.logEvent({
+        eventType: 'FILE_SENT',
+        severity: 'INFO',
+        userId: socket.userId,
+        username: socket.username,
+        targetUserId: recipientId,
+        metadata: { fileName, fileSize },
+        result: 'SUCCESS'
+      });
+      
+    } catch (error) {
+      console.error('[FILE] Error:', error.message);
+      socket.emit('file:error', { error: error.message });
     }
   });
   
