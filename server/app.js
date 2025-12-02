@@ -190,6 +190,78 @@ io.on('connection', (socket) => {
     }
   });
   
+  // FILE HANDLING
+  // ==========================================
+  
+  socket.on('file:send', async (data) => {
+    try {
+      const { recipientId, fileName, fileSize, mimeType, encryptedMetadata, encryptedData, encryption, hash, timestamp, sequenceNumber } = data;
+      
+      // Store file metadata
+      const encryptedFile = new EncryptedFile({
+        senderId: socket.userId,
+        recipientId,
+        fileName,
+        fileSize,
+        mimeType,
+        encryptedMetadata,
+        encryptedData,
+        encryption,
+        hash,
+        timestamp,
+        sequenceNumber
+      });
+      await encryptedFile.save();
+      
+      console.log(`[FILE] 📎 ${socket.username} -> ${recipientId}: ${fileName}`);
+      
+      // Send to recipient if online
+      const recipientSocketId = connectedUsers.get(recipientId);
+      if (recipientSocketId) {
+        io.to(recipientSocketId).emit('file:receive', {
+          fileId: encryptedFile._id,
+          senderId: socket.userId,
+          senderUsername: socket.username,
+          fileName,
+          fileSize,
+          mimeType,
+          encryptedMetadata,
+          encryptedData,
+          encryption,
+          hash,
+          timestamp,
+          sequenceNumber
+        });
+        
+        // Update status
+        encryptedFile.status = 'delivered';
+        encryptedFile.deliveredAt = new Date();
+        await encryptedFile.save();
+      }
+      
+      // Acknowledge
+      socket.emit('file:sent', {
+        fileId: encryptedFile._id,
+        status: recipientSocketId ? 'delivered' : 'sent'
+      });
+      
+      // Log
+      await SecurityLog.logEvent({
+        eventType: 'FILE_SENT',
+        severity: 'INFO',
+        userId: socket.userId,
+        username: socket.username,
+        targetUserId: recipientId,
+        metadata: { fileName, fileSize },
+        result: 'SUCCESS'
+      });
+      
+    } catch (error) {
+      console.error('[FILE] Error:', error.message);
+      socket.emit('file:error', { error: error.message });
+    }
+  });
+  
   // ==========================================
   // KEY EXCHANGE HANDLING
   // ==========================================

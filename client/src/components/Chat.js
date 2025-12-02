@@ -18,9 +18,13 @@ function Chat() {
   const [sessionKey, setSessionKey] = useState(null);
   const [isTyping, setIsTyping] = useState(false);
   const [onlineUsers, setOnlineUsers] = useState([]);
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [isSendingFile, setIsSendingFile] = useState(false);
   
   const messagesEndRef = useRef(null);
   const typingTimeoutRef = useRef(null);
+  const fileInputRef = useRef(null);
   
   // Auto scroll to bottom
   const scrollToBottom = () => {
@@ -91,6 +95,33 @@ function Chat() {
       }
     };
     
+    const handleFile = async (data) => {
+      if (data.senderId === partnerId) {
+        // Try to decrypt
+        let content = `📎 ${data.fileName}`;
+        if (sessionKey) {
+          try {
+            await window.CryptoLib.decryptFile(sessionKey, {
+              encryptedMetadata: data.encryptedMetadata,
+              encryptedData: data.encryptedData,
+              encryption: data.encryption
+            });
+            content = `📎 ${data.fileName}`;
+          } catch (e) {
+            console.error('File decrypt error:', e);
+            content = `📎 ${data.fileName} [Failed to decrypt]`;
+          }
+        }
+        
+        setMessages(prev => [...prev, {
+          ...data,
+          content,
+          isFile: true,
+          isMine: false
+        }]);
+      }
+    };
+    
     const handleTypingStart = ({ userId }) => {
       if (userId === partnerId) setIsTyping(true);
     };
@@ -100,11 +131,13 @@ function Chat() {
     };
     
     socket.on('message:receive', handleMessage);
+    socket.on('file:receive', handleFile);
     socket.on('typing:start', handleTypingStart);
     socket.on('typing:stop', handleTypingStop);
     
     return () => {
       socket.off('message:receive', handleMessage);
+      socket.off('file:receive', handleFile);
       socket.off('typing:start', handleTypingStart);
       socket.off('typing:stop', handleTypingStop);
     };
@@ -240,6 +273,91 @@ function Chat() {
     }
   };
   
+  // Send file
+  const sendFile = async () => {
+    if (!selectedFile || !socket || !partnerId) return;
+    
+    if (!sessionKey) {
+      alert('Please complete key exchange first');
+      return;
+    }
+    
+    try {
+      setIsSendingFile(true);
+      setUploadProgress(0);
+      
+      // Encrypt file
+      const encrypted = await window.CryptoLib.encryptFile(sessionKey, selectedFile);
+      
+      const fileData = {
+        recipientId: partnerId,
+        fileName: selectedFile.name,
+        fileSize: selectedFile.size,
+        mimeType: selectedFile.type,
+        encryptedMetadata: encrypted.encryptedMetadata,
+        encryptedData: encrypted.encryptedData,
+        encryption: encrypted.encryption,
+        hash: encrypted.hash,
+        timestamp: new Date().toISOString(),
+        sequenceNumber: messages.length + 1
+      };
+      
+      socket.emit('file:send', fileData);
+      
+      setMessages(prev => [...prev, {
+        ...fileData,
+        senderId: user.id,
+        content: `📎 ${selectedFile.name}`,
+        isFile: true,
+        isMine: true
+      }]);
+      
+      setSelectedFile(null);
+      setUploadProgress(0);
+      setIsSendingFile(false);
+      
+    } catch (err) {
+      console.error('File send error:', err);
+      alert('Failed to send file');
+      setIsSendingFile(false);
+    }
+  };
+  
+  // Handle file selection
+  const handleFileSelect = (e) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      setSelectedFile(file);
+    }
+  };
+  
+  // Download file
+  const downloadFile = async (fileMsg) => {
+    if (!sessionKey) return;
+    
+    try {
+      // Decrypt file
+      const decrypted = await window.CryptoLib.decryptFile(sessionKey, {
+        encryptedMetadata: fileMsg.encryptedMetadata,
+        encryptedData: fileMsg.encryptedData,
+        encryption: fileMsg.encryption
+      });
+      
+      // Create blob and download
+      const blob = new Blob([decrypted], { type: fileMsg.mimeType || 'application/octet-stream' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = fileMsg.fileName;
+      a.click();
+      URL.revokeObjectURL(url);
+      
+    } catch (err) {
+      console.error('File download error:', err);
+      alert('Failed to download file');
+    }
+  };
+  
   const isOnline = (userId) => onlineUsers.includes(userId);
   
   return (
@@ -361,7 +479,27 @@ function Chat() {
                     key={idx}
                     className={`message ${msg.isMine ? 'mine' : 'theirs'}`}
                   >
-                    <div className="message-content">{msg.content}</div>
+                    {msg.isFile ? (
+                      <div className="file-message">
+                        <div className="file-info">
+                          <span className="file-icon">📎</span>
+                          <div className="file-details">
+                            <span className="file-name">{msg.fileName}</span>
+                            <span className="file-size">
+                              {(msg.fileSize / 1024 / 1024).toFixed(2)} MB
+                            </span>
+                          </div>
+                        </div>
+                        <button
+                          className="btn btn-sm"
+                          onClick={() => downloadFile(msg)}
+                        >
+                          ⬇ Download
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="message-content">{msg.content}</div>
+                    )}
                     <div className="message-time">
                       {new Date(msg.timestamp || msg.createdAt).toLocaleTimeString([], {
                         hour: '2-digit',
@@ -383,22 +521,67 @@ function Chat() {
             
             {/* Message Input */}
             <div className="message-input-container">
-              <input
-                type="text"
-                placeholder={sessionKey ? "Type a message..." : "Complete key exchange first..."}
-                value={newMessage}
-                onChange={handleTyping}
-                onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
-                disabled={!sessionKey}
-                className="message-input"
-              />
-              <button
-                onClick={sendMessage}
-                disabled={!sessionKey || !newMessage.trim()}
-                className="btn btn-primary send-btn"
-              >
-                Send
-              </button>
+              <div className="input-wrapper">
+                <input
+                  type="text"
+                  placeholder={sessionKey ? "Type a message..." : "Complete key exchange first..."}
+                  value={newMessage}
+                  onChange={handleTyping}
+                  onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
+                  disabled={!sessionKey}
+                  className="message-input"
+                />
+                
+                <div className="input-actions">
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    onChange={handleFileSelect}
+                    disabled={!sessionKey || isSendingFile}
+                    style={{ display: 'none' }}
+                  />
+                  <button
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={!sessionKey || isSendingFile}
+                    className="btn btn-secondary"
+                    title="Attach file"
+                  >
+                    📎
+                  </button>
+                  
+                  <button
+                    onClick={sendMessage}
+                    disabled={!sessionKey || !newMessage.trim()}
+                    className="btn btn-primary send-btn"
+                  >
+                    Send Message
+                  </button>
+                </div>
+              </div>
+              
+              {selectedFile && (
+                <div className="file-preview">
+                  <span className="file-name">📎 {selectedFile.name}</span>
+                  <span className="file-size">({(selectedFile.size / 1024 / 1024).toFixed(2)} MB)</span>
+                  <button
+                    onClick={sendFile}
+                    disabled={isSendingFile}
+                    className="btn btn-primary"
+                  >
+                    {isSendingFile ? `Sending... ${uploadProgress}%` : 'Send File'}
+                  </button>
+                  <button
+                    onClick={() => {
+                      setSelectedFile(null);
+                      setUploadProgress(0);
+                    }}
+                    disabled={isSendingFile}
+                    className="btn btn-secondary"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              )}
             </div>
           </>
         ) : (
