@@ -197,6 +197,9 @@ io.on('connection', (socket) => {
     try {
       const { recipientId, fileName, fileSize, mimeType, encryptedMetadata, encryptedData, encryption, hash, timestamp, sequenceNumber } = data;
       
+      console.log(`\n[FILE] 📎 Received file from ${socket.username} (${socket.userId}) -> ${recipientId}`);
+      console.log(`    Filename: ${fileName}, Size: ${fileSize} bytes`);
+      
       // Store file metadata
       const encryptedFile = new EncryptedFile({
         senderId: socket.userId,
@@ -212,12 +215,13 @@ io.on('connection', (socket) => {
         sequenceNumber
       });
       await encryptedFile.save();
-      
-      console.log(`[FILE] 📎 ${socket.username} -> ${recipientId}: ${fileName}`);
+      console.log(`    Stored in DB with ID: ${encryptedFile._id}`);
       
       // Send to recipient if online
       const recipientSocketId = connectedUsers.get(recipientId);
       if (recipientSocketId) {
+        console.log(`    Recipient is online (socket: ${recipientSocketId}), sending file...`);
+        
         io.to(recipientSocketId).emit('file:receive', {
           fileId: encryptedFile._id,
           senderId: socket.userId,
@@ -233,34 +237,21 @@ io.on('connection', (socket) => {
           sequenceNumber
         });
         
+        console.log(`    File:receive emitted to recipient`);
+        
         // Update status
         encryptedFile.status = 'delivered';
         encryptedFile.deliveredAt = new Date();
         await encryptedFile.save();
+      } else {
+        console.log(`    Recipient is OFFLINE, stored for later delivery`);
       }
-      
-      // Acknowledge
-      socket.emit('file:sent', {
-        fileId: encryptedFile._id,
-        status: recipientSocketId ? 'delivered' : 'sent'
-      });
-      
-      // Log
-      await SecurityLog.logEvent({
-        eventType: 'FILE_SENT',
-        severity: 'INFO',
-        userId: socket.userId,
-        username: socket.username,
-        targetUserId: recipientId,
-        metadata: { fileName, fileSize },
-        result: 'SUCCESS'
-      });
-      
-    } catch (error) {
-      console.error('[FILE] Error:', error.message);
-      socket.emit('file:error', { error: error.message });
+    } catch (err) {
+      console.error('[FILE] ❌ Error:', err);
     }
   });
+  
+  // Message handlers
   
   // ==========================================
   // KEY EXCHANGE HANDLING

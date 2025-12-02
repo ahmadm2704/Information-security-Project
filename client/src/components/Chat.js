@@ -97,28 +97,17 @@ function Chat() {
     
     const handleFile = async (data) => {
       if (data.senderId === partnerId) {
-        // Try to decrypt
-        let content = `📎 ${data.fileName}`;
-        if (sessionKey) {
-          try {
-            await window.CryptoLib.decryptFile(sessionKey, {
-              encryptedMetadata: data.encryptedMetadata,
-              encryptedData: data.encryptedData,
-              encryption: data.encryption
-            });
-            content = `📎 ${data.fileName}`;
-          } catch (e) {
-            console.error('File decrypt error:', e);
-            content = `📎 ${data.fileName} [Failed to decrypt]`;
-          }
-        }
+        console.log('📎 Received file:', data.fileName);
         
-        setMessages(prev => [...prev, {
+        // Store encrypted file data as-is
+        const fileMessage = {
           ...data,
-          content,
+          content: `📎 ${data.fileName}`,
           isFile: true,
           isMine: false
-        }]);
+        };
+        
+        setMessages(prev => [...prev, fileMessage]);
       }
     };
     
@@ -286,8 +275,12 @@ function Chat() {
       setIsSendingFile(true);
       setUploadProgress(0);
       
+      console.log('Encrypting file:', selectedFile.name);
+      
       // Encrypt file
       const encrypted = await window.CryptoLib.encryptFile(sessionKey, selectedFile);
+      
+      console.log('File encrypted, sending to', partnerId);
       
       const fileData = {
         recipientId: partnerId,
@@ -303,6 +296,7 @@ function Chat() {
       };
       
       socket.emit('file:send', fileData);
+      console.log('File:send emitted');
       
       setMessages(prev => [...prev, {
         ...fileData,
@@ -333,9 +327,14 @@ function Chat() {
   
   // Download file
   const downloadFile = async (fileMsg) => {
-    if (!sessionKey) return;
+    if (!sessionKey) {
+      alert('Session key not available');
+      return;
+    }
     
     try {
+      console.log('Downloading file:', fileMsg.fileName);
+      
       // Decrypt file
       const decrypted = await window.CryptoLib.decryptFile(sessionKey, {
         encryptedMetadata: fileMsg.encryptedMetadata,
@@ -343,18 +342,21 @@ function Chat() {
         encryption: fileMsg.encryption
       });
       
-      // Create blob and download
-      const blob = new Blob([decrypted], { type: fileMsg.mimeType || 'application/octet-stream' });
-      const url = URL.createObjectURL(blob);
+      console.log('File decrypted successfully:', decrypted);
+      
+      // Create download link and trigger download
+      const url = URL.createObjectURL(decrypted.data);
       const a = document.createElement('a');
       a.href = url;
-      a.download = fileMsg.fileName;
+      a.download = decrypted.fileName || fileMsg.fileName;
+      document.body.appendChild(a);
       a.click();
+      document.body.removeChild(a);
       URL.revokeObjectURL(url);
       
     } catch (err) {
       console.error('File download error:', err);
-      alert('Failed to download file');
+      alert('Failed to download file: ' + err.message);
     }
   };
   
