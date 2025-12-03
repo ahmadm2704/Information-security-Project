@@ -1239,7 +1239,6 @@ body {
   left: 0;
   color: var(--accent-primary);
 }
-
 /* ==========================================
    LOADING
    ========================================== */
@@ -1292,4 +1291,165 @@ body {
 
 ::-webkit-scrollbar-thumb:hover {
   background: #475569;
+}
+
+/* ==========================================
+   RESPONSIVE LAYOUT
+   ========================================== */
+
+@media (max-width: 1024px) {
+  .header {
+    padding: 0.75rem 1.25rem;
+  }
+
+  .header-left {
+    gap: 1rem;
+  }
+
+  .nav {
+    gap: 0.5rem;
+  }
+
+  .nav a {
+    padding: 0.35rem 0.75rem;
+    font-size: 0.9rem;
+  }
+
+  .chat-container {
+    height: calc(100vh - 60px);
+  }
+
+  .sidebar {
+    width: 260px;
+  }
+
+  .messages {
+    padding: 1rem;
+  }
+
+  .message {
+    max-width: 80%;
+  }
+}
+
+@media (max-width: 768px) {
+  .header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.75rem;
+  }
+
+  .header-right {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .app {
+    min-height: 100vh;
+  }
+
+  .main-content {
+    flex-direction: column;
+  }
+
+  .chat-container {
+    flex-direction: column;
+    height: auto;
+  }
+
+  .sidebar {
+    width: 100%;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    max-height: 260px;
+  }
+
+  .conversations,
+  .search-results {
+    max-height: 160px;
+  }
+
+  .chat-main {
+    min-height: calc(100vh - 320px);
+  }
+
+  .chat-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.75rem;
+  }
+
+  .message-input-container {
+    padding: 0.75rem 1rem;
+  }
+
+  .input-wrapper {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .input-actions {
+    justify-content: flex-end;
+  }
+
+  .message {
+    max-width: 90%;
+  }
+
+  .file-preview {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .auth-card,
+  .key-exchange-card {
+    padding: 1.75rem;
+  }
+
+  .file-share-container,
+  .security-logs-container {
+    padding: 1.25rem;
+  }
+}
+
+@media (max-width: 480px) {
+  .logo-text {
+    font-size: 1.25rem;
+  }
+
+  .chat-header {
+    padding: 0.75rem 1rem;
+  }
+
+  .messages {
+    padding: 0.75rem;
+  }
+
+  .message {
+    padding: 0.7rem 0.9rem;
+    font-size: 0.9rem;
+  }
+
+  .message-time {
+    font-size: 0.65rem;
+  }
+
+  .message-input {
+    font-size: 0.9rem;
+  }
+
+  .btn {
+    padding: 0.6rem 1.1rem;
+    font-size: 0.9rem;
+  }
+
+  .ke-header h1,
+  .file-share-header h1,
+  .security-header h1 {
+    font-size: 1.4rem;
+  }
+
+  .summary-cards {
+    grid-template-columns: 1fr;
+  }
 }

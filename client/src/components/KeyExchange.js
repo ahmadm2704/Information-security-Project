@@ -101,6 +101,11 @@ function KeyExchange() {
     
     setSocket(s);
     socketRef.current = s;
+
+    //2nd attack
+
+    // socketRef.current = s;
+    // window.keSocket = s;   // <-- add this line
     
     return () => s.disconnect();
   }, [token, addLog]);

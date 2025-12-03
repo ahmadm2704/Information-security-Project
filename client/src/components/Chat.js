@@ -25,6 +25,7 @@ function Chat() {
   const messagesEndRef = useRef(null);
   const typingTimeoutRef = useRef(null);
   const fileInputRef = useRef(null);
+  const seenNoncesRef = useRef(new Set());
   
   // Auto scroll to bottom
   const scrollToBottom = () => {
@@ -79,6 +80,15 @@ function Chat() {
     
     const handleMessage = async (data) => {
       if (data.senderId === partnerId) {
+        // Basic client-side replay protection using nonce cache
+        if (data.nonce && seenNoncesRef.current.has(data.nonce)) {
+          console.warn('🔁 Replayed message detected on client (duplicate nonce), ignoring');
+          return;
+        }
+        if (data.nonce) {
+          seenNoncesRef.current.add(data.nonce);
+        }
+
         // Try to decrypt
         let content = '[Encrypted]';
         if (sessionKey) {

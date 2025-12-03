@@ -135,7 +135,65 @@ io.on('connection', (socket) => {
   socket.on('message:send', async (data) => {
     try {
       const { recipientId, encryptedPayload, iv, nonce, timestamp, sequenceNumber } = data;
-      
+
+      // ==========================================
+      // REPLAY PROTECTION (SERVER-SIDE)
+      // ==========================================
+
+      const now = Date.now();
+      const MAX_CLOCK_SKEW_MS = 5 * 60 * 1000; // 5 minutes
+
+      // 1) Timestamp freshness check
+      if (typeof timestamp !== 'number' || Math.abs(now - timestamp) > MAX_CLOCK_SKEW_MS) {
+        console.warn('[MESSAGE] ⏱️ Invalid or stale timestamp - possible replay');
+
+        await SecurityLog.logEvent({
+          eventType: 'INVALID_TIMESTAMP_DETECTED',
+          severity: 'WARNING',
+          userId: socket.userId,
+          username: socket.username,
+          targetUserId: recipientId,
+          details: { timestamp, now },
+          result: 'BLOCKED'
+        });
+
+        socket.emit('message:error', { error: 'Message rejected due to invalid timestamp' });
+        return;
+      }
+
+      // 2) Sequence number monotonicity check (per sender -> recipient)
+      if (typeof sequenceNumber !== 'number' || sequenceNumber < 1) {
+        socket.emit('message:error', { error: 'Invalid sequence number' });
+        return;
+      }
+
+      const lastMessage = await Message
+        .findOne({ senderId: socket.userId, recipientId })
+        .sort({ sequenceNumber: -1 })
+        .select('sequenceNumber');
+
+      if (lastMessage && sequenceNumber <= lastMessage.sequenceNumber) {
+        console.warn('[MESSAGE] 🔁 Detected non-increasing sequence number - possible replay');
+
+        await SecurityLog.logEvent({
+          eventType: 'REPLAY_ATTACK_DETECTED',
+          severity: 'WARNING',
+          userId: socket.userId,
+          username: socket.username,
+          targetUserId: recipientId,
+          details: {
+            receivedSequence: sequenceNumber,
+            lastSequence: lastMessage.sequenceNumber
+          },
+          result: 'BLOCKED'
+        });
+
+        socket.emit('message:error', { error: 'Message rejected due to replay detection' });
+        return;
+      }
+
+      // 3) Nonce uniqueness is enforced by unique index; duplicate => replay
+
       // Store message
       const message = new Message({
         senderId: socket.userId,
@@ -146,7 +204,30 @@ io.on('connection', (socket) => {
         timestamp,
         sequenceNumber
       });
-      await message.save();
+
+      try {
+        await message.save();
+      } catch (err) {
+        // Handle duplicate nonce (E11000 duplicate key error)
+        if (err && err.code === 11000) {
+          console.warn('[MESSAGE] 🔁 Duplicate nonce detected - possible replay');
+
+          await SecurityLog.logEvent({
+            eventType: 'REPLAY_ATTACK_DETECTED',
+            severity: 'WARNING',
+            userId: socket.userId,
+            username: socket.username,
+            targetUserId: recipientId,
+            details: { nonce },
+            result: 'BLOCKED'
+          });
+
+          socket.emit('message:error', { error: 'Message rejected due to replay detection (nonce)' });
+          return;
+        }
+
+        throw err;
+      }
       
       console.log(`[MESSAGE] 📨 ${socket.username} -> ${recipientId}`);
       
